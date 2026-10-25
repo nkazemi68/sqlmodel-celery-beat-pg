@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sqlmodel-celery-beat-pg"
+version = "0.1.1"
+description = "Celery Beat scheduler, models, CLI and admin on SQLModel + PostgreSQL."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+keywords = ["celery", "beat", "sqlmodel", "postgresql", "scheduler"]
+
+dependencies = [
+    "sqlmodel>=0.0.48",
+    "sqlalchemy>=2.1",
+    "celery>=5.3",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
+    "python-dateutil>=2.9",
+    "typer>=0.12",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+admin = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sqladmin>=0.16",
+]
+dev = ["pytest", "ruff", "mypy", "build", "twine"]
+
+[project.scripts]
+scb           = "sqlmodel_celery_beat.cli:app"
+sbeat         = "sqlmodel_celery_beat.cli:app"
+scb-migrate   = "sqlmodel_celery_beat.migrate:main"
+sbeat-migrate = "sqlmodel_celery_beat.migrate:main"
+
+[project.entry-points."celery.beat.schedulers"]
+sqlmodel = "sqlmodel_celery_beat.schedulers:DatabaseScheduler"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sqlmodel_celery_beat"]
