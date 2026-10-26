@@ -4,14 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqlmodel-celery-beat-pg"
-version = "0.1.2"
+version = "0.1.3"
 description = "Celery Beat scheduler, models, CLI and admin on SQLModel + PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
-authors = [{ name = "Your Name", email = "you@example.com" }]
+authors = [{ name = "Navid Kazemi" }]
 keywords = ["celery", "beat", "sqlmodel", "postgresql", "scheduler"]
-
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Celery",
+    "Topic :: System :: Distributed Computing",
+]
 dependencies = [
     "sqlmodel>=0.0.14",
     "sqlalchemy>=2.0",
@@ -21,15 +31,19 @@ dependencies = [
     "python-dateutil>=2.9",
     "typer>=0.12",
     "rich>=13",
+    'tzdata; sys_platform == "win32"',
 ]
 
+[project.urls]
+Homepage = "https://github.com/nkazemi68/sqlmodel-celery-beat-pg"
+Repository = "https://github.com/nkazemi68/sqlmodel-celery-beat-pg"
+Issues = "https://github.com/nkazemi68/sqlmodel-celery-beat-pg/issues"
+Changelog = "https://github.com/nkazemi68/sqlmodel-celery-beat-pg/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
-admin = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "sqladmin>=0.16",
-]
-dev = ["pytest", "ruff", "mypy", "build", "twine"]
+solar = ["ephem>=4.1"]
+admin = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "sqladmin>=0.16"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "build", "twine"]
 
 [project.scripts]
 scb           = "sqlmodel_celery_beat.cli:app"
@@ -37,7 +51,7 @@ sbeat         = "sqlmodel_celery_beat.cli:app"
 scb-migrate   = "sqlmodel_celery_beat.migrate:main"
 sbeat-migrate = "sqlmodel_celery_beat.migrate:main"
 
-[project.entry-points."celery.beat.schedulers"]
+[project.entry-points."celery.beat_schedulers"]
 sqlmodel = "sqlmodel_celery_beat.schedulers:DatabaseScheduler"
 
 [tool.hatch.build.targets.wheel]

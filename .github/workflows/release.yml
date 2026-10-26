@@ -1,17 +1,62 @@
+name: Release
+
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: celery_beat_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/celery_beat_test
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install build twine
+        with:
+          python-version: "3.12"
+
+      - name: Verify tag matches package version
+        run: |
+          python - <<'PY'
+          import re, pathlib, sys
+          tag = "${{ github.ref_name }}".lstrip("v")
+          text = pathlib.Path("pyproject.toml").read_text()
+          version = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M).group(1)
+          if tag != version:
+              sys.exit(f"tag {tag} != version {version}")
+          PY
+
+      - run: pip install -e '.[dev,solar]'
+      - run: ruff check src tests
+      - run: python -m pytest -q
       - run: python -m build
-      - run: twine upload dist/*
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+      - run: python -m twine check dist/*
+
+      - name: Install wheel in clean venv
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          /tmp/verify/bin/python -c "import sqlmodel_celery_beat; print(sqlmodel_celery_beat.__version__)"
+          /tmp/verify/bin/sbeat --help
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

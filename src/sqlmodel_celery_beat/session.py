@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from contextlib import contextmanager
 from typing import Generator, Optional
 
@@ -6,17 +8,9 @@ from sqlmodel import Session, create_engine
 
 class SessionManager:
     def __init__(self, dburi: str, schema: Optional[str] = None, **engine_kwargs):
-        """
-        Parameters
-        ----------
-        dburi:
-            SQLAlchemy URL, e.g. ``postgresql+psycopg://user:pass@host/db``.
-        schema:
-            Optional PostgreSQL schema for the beat tables. Applied via
-            ``search_path=<schema>,public`` so any CREATE / SELECT without an
-            explicit schema qualifier is routed to that schema first.
-        """
         self.schema = schema
+        self._dburi = dburi
+        self._overrides: dict[str, "object"] = {}
 
         if schema:
             connect_args = engine_kwargs.setdefault("connect_args", {})
@@ -27,8 +21,11 @@ class SessionManager:
         self.engine = create_engine(dburi, **engine_kwargs)
 
     def session_factory(self, dburi: Optional[str] = None) -> Session:
-        engine = create_engine(dburi) if dburi else self.engine
-        return Session(engine)
+        if dburi is None or dburi == self._dburi:
+            return Session(self.engine)
+        if dburi not in self._overrides:
+            self._overrides[dburi] = create_engine(dburi)
+        return Session(self._overrides[dburi])
 
     @contextmanager
     def session_scope(self) -> Generator[Session, None, None]:
@@ -42,8 +39,27 @@ class SessionManager:
         finally:
             session.close()
 
+    def close(self) -> None:
+        for engine in self._overrides.values():
+            engine.dispose()
+        self._overrides.clear()
 
-def init_db(engine) -> None:
+
+def init_db(engine, tables=None) -> None:
     from sqlmodel import SQLModel
     import sqlmodel_celery_beat.models  # noqa: F401
-    SQLModel.metadata.create_all(engine)
+
+    if tables is None:
+        from .models import (
+            IntervalSchedule, CrontabSchedule, SolarSchedule,
+            ClockedSchedule, PeriodicTask, PeriodicTaskChanged,
+        )
+        tables = [
+            IntervalSchedule.__table__,
+            CrontabSchedule.__table__,
+            SolarSchedule.__table__,
+            ClockedSchedule.__table__,
+            PeriodicTask.__table__,
+            PeriodicTaskChanged.__table__,
+        ]
+    SQLModel.metadata.create_all(engine, tables=tables)

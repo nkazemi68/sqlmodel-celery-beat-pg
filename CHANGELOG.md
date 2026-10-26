@@ -1,130 +1,61 @@
 # Changelog
 
-All notable changes to `sqlmodel-celery-beat-pg` are documented in this file.
+## 0.1.3 — 2026-10-26
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
----
-
-## [0.1.2] — 2026-10-25
-
-### Fixed
-
-- **`SessionManager(schema=...)` is now actually applied.** The argument was
-  previously stored on the object but never passed to the engine, queries, or
-  Alembic — the tables were silently created in `public`. The engine now opens
-  every connection with `options=-c search_path=<schema>,public`, so both
-  `CREATE TABLE` and unqualified `SELECT` resolve inside the schema first.
-
-- **`PeriodicTask.args` / `.kwargs` are deserialized from JSON strings.**
-  `DatabaseScheduler._reload` was passing the raw DB strings straight into
-  `ScheduleEntry`, so Celery dispatched tasks with a single positional string
-  instead of a tuple of arguments and an empty kwargs dict. Both fields are now
-  parsed via `json.loads` before dispatch.
-
-- **`PeriodicTaskChanged` marker row is created on first write.** The
-  `after_insert` / `after_update` / `after_delete` handler only executed an
-  `UPDATE`, so on a fresh database the marker table stayed empty and
-  `DatabaseScheduler.tick()` returned early — no task ever fired. The handler
-  now detects `rowcount == 0` and `INSERT`s the row.
-
-- **`DatabaseScheduler.tick()` now actually dispatches due tasks.** The override
-  previously reloaded the schedule and returned; it never called
-  `super().tick()`. It now reloads (if the marker changed) and then runs the
-  base implementation.
-
-- **`ClockedSchedule` one-shot semantics are enforced.** A `ClockedSchedule`
-  whose `clocked_time` had already passed would fire on every beat tick until
-  the row was manually removed. `PeriodicTask` now has a `one_off` boolean
-  (migration `0002`) and `DatabaseScheduler` disables the row after the first
-  successful dispatch — matching `django-celery-beat`.
-
-- **`sqlmodel_celery_beat.cli.migrate` no longer ignores `--schema`.**
-  The CLI passes it through to `run_alembic`, which threads it into
-  `migrations/env.py` via `run_schema` so `alembic_version` is created inside
-  the target schema.
+### Added
+- `celery.beat_schedulers` entry point alias `sqlmodel` — `celery -S sqlmodel` now works.
+- `DatabaseScheduleEntry` enforcing `start_time`, `expire_seconds`, and `one_off`.
+- `PeriodicTask.start_time`, `expire_seconds`, `description` columns (migration `0003`).
+- `sbeat cleanup-schedules` command and `cleanup_orphan_schedules()` helper.
+- `validate_schedule_exists()` helper.
+- `[solar]` extra (`ephem`); solar schedules validate event/coordinates on construction.
+- Crontab schedules validate expressions at write time (also surfaced in admin).
+- `tzdata` declared for Windows.
 
 ### Changed
+- `DatabaseScheduler` resolves its database from `app.conf.beat_dburi`, `beat_schema`, `beat_engine_options`; an explicit `session_manager` still wins.
+- `BeatConfig.apply_to_celery()` writes only supported Celery settings and also sets `beat_max_loop_interval = 5` and `timezone`.
+- `Period` is now stored as lowercase values (`seconds`); migration `0004` converts existing rows.
+- `args`, `kwargs`, `headers` are `Text` columns (no 1024-char cap). Migration `0003`.
+- `PeriodicTaskChanged` normalised to a single row (`id = 1`); `update_changed()` no longer commits. Migration `0005`.
+- `use_timezone` is applied to Celery; `table_prefix` removed (fixed `celery_` prefix).
+- `sbeat-migrate revision` correctly parses `-m/--message`, `--autogenerate`, `--rev-id`.
+- `SessionManager.session_factory(None)` reuses the configured engine; override engines are cached and disposed on `close()`.
+- `init_db()` only creates the six package tables.
+- CLI prints an actionable message instead of a traceback when no database is configured.
 
-- **Loosened dependency pins.**
-  - `sqlmodel>=0.0.14` (was `>=0.0.48`).
-  - `sqlalchemy>=2.0` (was `>=2.1`).
+### Fixed
+- Stock `celery -A app beat -S sqlmodel` boots without manual `session_manager` injection.
+- `sync()` persists `last_run_at` and `total_run_count`; dirty state survives reload and DB errors; `close()` flushes.
+- `_reload()` isolates per-entry failures, merges dirty run state, merges `beat_schedule`, installs default entries.
+- Change detection listens on all four schedule models, uses the marker timestamp (clock-skew safe), and refreshes at least every 300 s.
+- One-off tasks are only disabled after a successful publish.
+- `one_off` no longer leaks into dispatch options; only valid for `discriminator="clocked"`.
+- `headers` are forwarded and `periodic_task_name` is always set.
+- Naive `clocked_time` values are normalised to UTC.
+- Deleting the last referencing task removes the orphan schedule.
+- `date_changed` updates on write.
+- `alembic check` reports no drift between models and migrations.
 
-  The package’s code only uses SQLModel 0.0.14 APIs and SQLAlchemy 2.0 APIs. The
-  previous pins conflicted with `sqlmodel<2.1.0`’s own SQLAlchemy cap and made
-  the wheel unusable in stacks that pin `sqlmodel==0.0.31` / `sqlalchemy==2.0.46`.
+### Compatibility
+- Requires Celery >= 5.3; Celery 5.6 `clocked` fallback is covered by tests.
+- No breaking changes to public imports or existing CLI command names.
 
-- **`sbeat list-tasks`** now prints a `one_off` column alongside `enabled`.
+## 0.1.2 — 2026-10-25
 
-- **`sbeat-migrate`** accepts `--dburi` and `--schema` as first-class options;
-  positional args are forwarded to the Alembic command unchanged.
+### Fixed
+- **`SessionManager(schema=...)`** now actually applied via `search_path=<schema>,public`.
+- **`PeriodicTask.args` / `.kwargs`** deserialized from JSON strings.
+- **`PeriodicTaskChanged`** row created on first write.
+- **`DatabaseScheduler.tick()`** now calls `super().tick()`.
+- **`ClockedSchedule` one-shot semantics** enforced via `one_off` (migration `0002`).
 
-### Added
-
-- `PeriodicTask.one_off` column (migration `0002_add_one_off`).
-- `sbeat init --schema`, `sbeat migrate --schema`, `sbeat list-tasks --schema`,
-  `sbeat shell --schema`, `sbeat admin --schema`.
-- `migrations/env.py` honours `run_schema` for `version_table_schema` and sets
-  `include_schemas=True` so autogenerate sees existing tables inside the target
-  schema.
-- `PeriodicTaskAdmin.column_list` now exposes `one_off` in the web UI.
-- README section on one-shot tasks and the args/kwargs contract.
-
-### Internal
-
-- `_decode_json` helper in `schedulers.py` centralises the args/kwargs parsing.
-- `_with_search_path` helper in `migrate.py` builds the `options=-c
-  search_path=…` URL fragment consistently for both `run_alembic` and
-  `SessionManager` callers.
-
-### Upgrade notes
-
-- **If you were relying on `SessionManager(schema=...)` to route tables into a
-  schema, verify after upgrading that the tables actually landed where you
-  expected.** In 0.1.1 they went to `public` regardless of the argument.
-- **If you created any `PeriodicTask` rows with `args` / `kwargs` before 0.1.2,
-  re-check them.** Tasks dispatched prior to this release received their args as
-  a JSON string; if your task code defended against that, you can simplify it.
-- **Run `sbeat migrate` after upgrading** so the new `one_off` column is added
-  to `celery_periodic_task`.
-
----
-
-## [0.1.1] — 2026-09-14
+### Changed
+- `sqlmodel>=0.0.14`, `sqlalchemy>=2.0`.
+- `sbeat migrate` / `sbeat-migrate` accept `--schema`.
 
 ### Added
+- `PeriodicTask.one_off` and `0002_add_one_off`.
 
-- Initial public release on PyPI.
-- SQLModel models for `IntervalSchedule`, `CrontabSchedule`, `SolarSchedule`,
-  `ClockedSchedule`, `PeriodicTask`, `PeriodicTaskChanged`.
-- `DatabaseScheduler` for `celery beat -S`.
-- Bundled Alembic migrations (`0001_initial`).
-- `sbeat` / `scb` CLI with `init`, `migrate`, `list-tasks`, `shell`, `admin`.
-- `sbeat-migrate` CLI wrapping Alembic.
-- Optional FastAPI + SQLAdmin admin UI (`[admin]` extra) at `/admin`.
-- `configure(dburi=..., schema=...).apply_to_celery(celery)` helper.
-
-### Known issues (fixed in 0.1.2)
-
-- `SessionManager(schema=...)` accepted the argument but never used it.
-- `PeriodicTask.args` / `.kwargs` were forwarded to Celery as raw JSON strings.
-- `PeriodicTaskChanged` was never inserted, so `tick()` short-circuited on a
-  fresh database.
-- `DatabaseScheduler.tick()` overrode the base method without calling `super()`,
-  so due tasks were never dispatched.
-- `ClockedSchedule` one-shot tasks fired on every beat tick after their due
-  time.
-- `sqlmodel>=0.0.48` and `sqlalchemy>=2.1` pins were incompatible with
-  SQLModel’s own `sqlalchemy<2.1` requirement.
-
----
-
-## Versioning policy
-
-- **Major** — breaking API change (removed / renamed public function or model
-  field).
-- **Minor** — additive change (new model, new CLI command, new config option).
-- **Patch** — bug fix, dependency relaxation, documentation only.
-
-Deprecations are announced one minor version ahead of removal.
+## 0.1.1 — 2025-01-01
+Initial release.

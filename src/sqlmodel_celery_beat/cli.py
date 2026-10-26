@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import code
 from typing import Optional
 
@@ -11,6 +12,7 @@ from .config import get_config
 from .models import (
     ClockedSchedule, CrontabSchedule, IntervalSchedule, Period,
     PeriodicTask, PeriodicTaskChanged, SolarSchedule,
+    cleanup_orphan_schedules,
 )
 from .session import SessionManager, init_db
 
@@ -18,13 +20,28 @@ app = typer.Typer(help="sqlmodel-celery-beat CLI", no_args_is_help=True)
 console = Console()
 
 
+def _resolve_dburi(dburi: Optional[str]) -> str:
+    if dburi:
+        return dburi
+    try:
+        return get_config().dburi
+    except RuntimeError:
+        console.print(
+            "[red]No database configured.[/red] Pass [bold]--dburi[/bold] "
+            "or call [bold]sqlmodel_celery_beat.configure(dburi=...)[/bold] first."
+        )
+        raise typer.Exit(1)
+
+
 def _mgr(dburi: Optional[str], schema: Optional[str] = None) -> SessionManager:
-    return SessionManager(dburi or get_config().dburi, schema=schema)
+    return SessionManager(_resolve_dburi(dburi), schema=schema)
 
 
 @app.command()
-def init(dburi: Optional[str] = typer.Option(None, "--dburi"),
-         schema: Optional[str] = typer.Option(None, "--schema")):
+def init(
+    dburi: Optional[str] = typer.Option(None, "--dburi"),
+    schema: Optional[str] = typer.Option(None, "--schema"),
+):
     init_db(_mgr(dburi, schema).engine)
     console.print("[green]Tables created.[/green]")
 
@@ -37,16 +54,17 @@ def migrate(
 ):
     from .migrate import run_alembic
     run_alembic(
-        "upgrade",
-        revision,
-        dburi=dburi or get_config().dburi,
+        "upgrade", revision,
+        dburi=_resolve_dburi(dburi),
         schema=schema,
     )
 
 
 @app.command(name="list-tasks")
-def list_tasks(dburi: Optional[str] = typer.Option(None, "--dburi"),
-               schema: Optional[str] = typer.Option(None, "--schema")):
+def list_tasks(
+    dburi: Optional[str] = typer.Option(None, "--dburi"),
+    schema: Optional[str] = typer.Option(None, "--schema"),
+):
     with _mgr(dburi, schema).session_scope() as s:
         tasks = s.exec(select(PeriodicTask)).all()
     t = Table(title="Periodic Tasks")
@@ -63,32 +81,55 @@ def list_tasks(dburi: Optional[str] = typer.Option(None, "--dburi"),
     console.print(t)
 
 
-@app.command()
-def shell(dburi: Optional[str] = typer.Option(None, "--dburi"),
-          schema: Optional[str] = typer.Option(None, "--schema")):
-    ns = {
-        "session": _mgr(dburi, schema).session_factory(),
-        "PeriodicTask": PeriodicTask,
-        "IntervalSchedule": IntervalSchedule,
-        "CrontabSchedule": CrontabSchedule,
-        "SolarSchedule": SolarSchedule,
-        "ClockedSchedule": ClockedSchedule,
-        "PeriodicTaskChanged": PeriodicTaskChanged,
-        "Period": Period,
-        "select": select,
-    }
-    code.interact(banner="sqlmodel-celery-beat shell", local=ns)
+@app.command(name="cleanup-schedules")
+def cleanup_schedules_cmd(
+    dburi: Optional[str] = typer.Option(None, "--dburi"),
+    schema: Optional[str] = typer.Option(None, "--schema"),
+):
+    with _mgr(dburi, schema).session_scope() as s:
+        n = cleanup_orphan_schedules(s)
+    console.print(f"[green]Removed {n} orphan schedule(s).[/green]")
 
 
 @app.command()
-def admin(dburi: Optional[str] = typer.Option(None, "--dburi"),
-          schema: Optional[str] = typer.Option(None, "--schema"),
-          host: str = typer.Option("127.0.0.1", "--host"),
-          port: int = typer.Option(8000, "--port")):
+def shell(
+    dburi: Optional[str] = typer.Option(None, "--dburi"),
+    schema: Optional[str] = typer.Option(None, "--schema"),
+):
+    mgr = _mgr(dburi, schema)
+    session = mgr.session_factory()
+    try:
+        ns = {
+            "session": session,
+            "mgr": mgr,
+            "PeriodicTask": PeriodicTask,
+            "IntervalSchedule": IntervalSchedule,
+            "CrontabSchedule": CrontabSchedule,
+            "SolarSchedule": SolarSchedule,
+            "ClockedSchedule": ClockedSchedule,
+            "PeriodicTaskChanged": PeriodicTaskChanged,
+            "Period": Period,
+            "select": select,
+        }
+        code.interact(banner="sqlmodel-celery-beat shell", local=ns)
+    finally:
+        session.close()
+
+
+@app.command()
+def admin(
+    dburi: Optional[str] = typer.Option(None, "--dburi"),
+    schema: Optional[str] = typer.Option(None, "--schema"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+):
     try:
         from .admin import build_app
     except ImportError:
-        console.print("[red]Install admin extras:[/red] pip install 'sqlmodel-celery-beat-pg[admin]'")
+        console.print(
+            "[red]Install admin extras:[/red] "
+            "pip install 'sqlmodel-celery-beat-pg[admin]'"
+        )
         raise typer.Exit(1)
     import uvicorn
     uvicorn.run(build_app(_mgr(dburi, schema)), host=host, port=port)
