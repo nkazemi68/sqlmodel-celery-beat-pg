@@ -20,7 +20,7 @@ class ClockedScheduleAdmin(ModelView, model=ClockedSchedule):
 
 class PeriodicTaskAdmin(ModelView, model=PeriodicTask):
     name = "Periodic Task"
-    column_list = ["id", "name", "task", "discriminator", "schedule_id", "enabled"]
+    column_list = ["id", "name", "task", "discriminator", "schedule_id", "enabled", "one_off"]
     column_searchable_list = ["name", "task"]
 
 class PeriodicTaskChangedAdmin(ModelView, model=PeriodicTaskChanged):

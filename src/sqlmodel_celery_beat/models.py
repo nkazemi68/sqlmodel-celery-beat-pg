@@ -1,10 +1,14 @@
 from __future__ import annotations
 import enum
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Column, Enum, Index, UniqueConstraint, event
 from sqlmodel import Field, SQLModel, select
+
+logger = logging.getLogger(__name__)
+
 
 class Period(str, enum.Enum):
     DAYS = "days"
@@ -12,6 +16,7 @@ class Period(str, enum.Enum):
     MINUTES = "minutes"
     SECONDS = "seconds"
     MICROSECONDS = "microseconds"
+
 
 class IntervalSchedule(SQLModel, table=True):
     __tablename__ = "celery_interval_schedule"
@@ -24,6 +29,7 @@ class IntervalSchedule(SQLModel, table=True):
         import celery.schedules as s
         from datetime import timedelta
         return s.schedule(timedelta(**{self.period.value: self.every}))
+
 
 class CrontabSchedule(SQLModel, table=True):
     __tablename__ = "celery_crontab_schedule"
@@ -43,6 +49,7 @@ class CrontabSchedule(SQLModel, table=True):
             nowfun=lambda: datetime.now(timezone.utc), timezone=self.timezone,
         )
 
+
 class SolarSchedule(SQLModel, table=True):
     __tablename__ = "celery_solar_schedule"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -55,6 +62,7 @@ class SolarSchedule(SQLModel, table=True):
         return s.solar(event=self.event, lat=self.latitude, lon=self.longitude,
                        nowfun=lambda: datetime.now(timezone.utc))
 
+
 class ClockedSchedule(SQLModel, table=True):
     __tablename__ = "celery_clocked_schedule"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -62,7 +70,27 @@ class ClockedSchedule(SQLModel, table=True):
 
     def schedule(self):
         import celery.schedules as s
-        return s.clocked(self.clocked_time)
+
+        # Celery 5.6 removed `celery.schedules.clocked`. Fall back to a
+        # local implementation when it's missing.
+        clocked = getattr(s, "clocked", None)
+        if clocked is not None:
+            return clocked(self.clocked_time)
+
+        class _Clocked(s.BaseSchedule):
+            def __init__(self, run_at, nowfun=None, app=None):
+                self.run_at = run_at
+                super().__init__(nowfun, app)
+
+            def remaining_estimate(self, last_run_at):
+                return self.run_at - self.now()
+
+            def is_due(self, last_run_at):
+                remaining = self.remaining_estimate(last_run_at)
+                return remaining.total_seconds() <= 0, remaining.total_seconds()
+
+        return _Clocked(self.clocked_time)
+
 
 class PeriodicTask(SQLModel, table=True):
     __tablename__ = "celery_periodic_task"
@@ -78,13 +106,19 @@ class PeriodicTask(SQLModel, table=True):
     priority: Optional[int] = Field(default=None)
     expires: Optional[datetime] = Field(default=None)
     enabled: bool = Field(default=True)
+    # When True, the scheduler fires the task once then disables the row.
+    # Intended for ClockedSchedule one-shots. Added in 0.1.2.
+    one_off: bool = Field(default=False)
     last_run_at: Optional[datetime] = Field(default=None)
     total_run_count: int = Field(default=0)
     date_changed: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     discriminator: str = Field(max_length=32)
     schedule_id: int
 
-    __table_args__ = (Index("ix_periodic_task_discriminator_schedule", "discriminator", "schedule_id"),)
+    __table_args__ = (
+        Index("ix_periodic_task_discriminator_schedule", "discriminator", "schedule_id"),
+    )
+
 
 class PeriodicTaskChanged(SQLModel, table=True):
     __tablename__ = "celery_periodic_task_changed"
@@ -105,10 +139,20 @@ class PeriodicTaskChanged(SQLModel, table=True):
     def update_from_session(cls, session) -> None:
         cls.update_changed(session)
 
+
 @event.listens_for(PeriodicTask, "after_insert")
 @event.listens_for(PeriodicTask, "after_update")
 @event.listens_for(PeriodicTask, "after_delete")
 def _touch_changed_row(mapper, connection, target):
-    connection.execute(
-        PeriodicTaskChanged.__table__.update().values(last_update=datetime.now(timezone.utc))
-    )
+    """
+    Bump the marker row so DatabaseScheduler.tick() reloads. Inserts the row
+    the first time (previous version only UPDATEd, so on an empty marker table
+    the tick saw `None` and never fired anything).
+    """
+    tbl = PeriodicTaskChanged.__table__
+    now = datetime.now(timezone.utc)
+
+    result = connection.execute(tbl.update().values(last_update=now))
+    if result.rowcount == 0:
+        logger.info("PeriodicTaskChanged row was missing — creating it now")
+        connection.execute(tbl.insert().values(last_update=now))

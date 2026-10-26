@@ -6,7 +6,7 @@ from .schedulers import DatabaseScheduler
 from .config import BeatConfig, configure, get_config
 from .session import SessionManager, init_db
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "Period", "IntervalSchedule", "CrontabSchedule", "SolarSchedule",

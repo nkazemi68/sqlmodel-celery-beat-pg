@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqlmodel-celery-beat-pg"
-version = "0.1.1"
+version = "0.1.2"
 description = "Celery Beat scheduler, models, CLI and admin on SQLModel + PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,8 +13,8 @@ authors = [{ name = "Your Name", email = "you@example.com" }]
 keywords = ["celery", "beat", "sqlmodel", "postgresql", "scheduler"]
 
 dependencies = [
-    "sqlmodel>=0.0.48",
-    "sqlalchemy>=2.1",
+    "sqlmodel>=0.0.14",
+    "sqlalchemy>=2.0",
     "celery>=5.3",
     "psycopg[binary]>=3.1",
     "alembic>=1.13",

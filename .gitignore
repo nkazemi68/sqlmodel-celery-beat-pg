@@ -29,3 +29,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 '@ | Set-Content .gitignore -Encoding utf8
+
+/docs/
+/pypi_tokens.txt
