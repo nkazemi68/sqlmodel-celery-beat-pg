@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Set
 
@@ -24,7 +25,7 @@ MODEL_MAP = {
     "clocked": ClockedSchedule,
 }
 
-FULL_REFRESH_INTERVAL = 300.0  # seconds
+FULL_REFRESH_INTERVAL = 300.0
 
 
 def _decode_json(value: Any, default: Any) -> Any:
@@ -55,9 +56,12 @@ class DatabaseScheduleEntry(ScheduleEntry):
         super().__init__(**kwargs)
 
     def __next__(self, last_run_at=None, total_run_count=None):
-        new = super().__next__(
-            last_run_at=last_run_at, total_run_count=total_run_count
-        )
+        # Celery 5.x's ScheduleEntry._next_instance accepts only ``last_run_at``
+        # and auto-increments ``total_run_count`` itself. Forwarding the kwarg
+        # would raise TypeError on the first tick.
+        new = super().__next__(last_run_at=last_run_at)
+        if total_run_count is not None:
+            new.total_run_count = total_run_count
         new.model_name = self.model_name
         new.start_time = self.start_time
         new.expire_seconds = self.expire_seconds
@@ -94,6 +98,7 @@ class DatabaseScheduler(Scheduler):
         self._pending_expiry: Set[str] = set()
         self._last_reload: Optional[datetime] = None
         self._last_full_refresh: Optional[datetime] = None
+        self._reload_mutex = threading.RLock()
 
         self.session_manager: Optional[SessionManager] = kwargs.pop(
             "session_manager", None
@@ -129,8 +134,6 @@ class DatabaseScheduler(Scheduler):
         return SessionManager(dburi, schema=schema, **engine_options)
 
     # ------------------------------------------------------------------
-    # Base contract
-    # ------------------------------------------------------------------
     @property
     def schedule(self) -> Dict[str, DatabaseScheduleEntry]:
         return self._schedule
@@ -141,8 +144,6 @@ class DatabaseScheduler(Scheduler):
         self._merge_static_entries()
 
     # ------------------------------------------------------------------
-    # Tick
-    # ------------------------------------------------------------------
     def tick(self):
         self._maybe_reload()
         self._scan_expirations()
@@ -151,10 +152,9 @@ class DatabaseScheduler(Scheduler):
         finally:
             self._drain_pending_one_off()
             self._drain_pending_expiry()
+            self.sync()
         return result
 
-    # ------------------------------------------------------------------
-    # Dirty tracking (durable run state)
     # ------------------------------------------------------------------
     def reserve(self, entry):
         name = entry.name
@@ -185,6 +185,13 @@ class DatabaseScheduler(Scheduler):
                     task.total_run_count = entry.total_run_count
                     session.add(task)
                     persisted.append(name)
+                # Our writes bump the change marker. Advance _last_reload past
+                # our own bump so the next tick's _maybe_reload skips a
+                # pointless reload.
+                session.flush()
+                marker = session.get(PeriodicTaskChanged, 1)
+                if marker is not None:
+                    self._last_reload = marker.last_update
         except Exception:
             logger.exception(
                 "sync() failed; retaining %d dirty entries for retry",
@@ -201,16 +208,12 @@ class DatabaseScheduler(Scheduler):
             super().close()
 
     # ------------------------------------------------------------------
-    # Dispatch (one-off only disabled after successful publish)
-    # ------------------------------------------------------------------
     def apply_entry(self, entry, producer=None):
         result = super().apply_entry(entry, producer=producer)
         if result is not None and isinstance(entry, DatabaseScheduleEntry) and entry.one_off:
             self._pending_one_off.add(entry.name)
         return result
 
-    # ------------------------------------------------------------------
-    # Reload paths
     # ------------------------------------------------------------------
     def _maybe_reload(self) -> None:
         now = datetime.now(timezone.utc)
@@ -221,15 +224,22 @@ class DatabaseScheduler(Scheduler):
             self._last_full_refresh = now
             self._reload()
             return
+
+        marker_last_update: Optional[datetime] = None
         try:
-            with self.session_manager.session_scope() as session:
+            with self.session_manager.session_scope(readonly=True) as session:
                 marker = session.get(PeriodicTaskChanged, 1)
+                if marker is not None:
+                    # Read the scalar *inside* the session so the ORM object
+                    # never escapes the session boundary (fixes DetachedInstanceError).
+                    marker_last_update = marker.last_update
         except Exception:
             logger.exception("_maybe_reload: marker read failed")
             return
-        if marker is None:
+
+        if marker_last_update is None:
             return
-        if self._last_reload is None or marker.last_update > self._last_reload:
+        if self._last_reload is None or marker_last_update > self._last_reload:
             self._reload()
 
     def _scan_expirations(self) -> None:
@@ -280,11 +290,15 @@ class DatabaseScheduler(Scheduler):
             self._schedule.pop(name, None)
 
     def _reload(self) -> None:
+        with self._reload_mutex:
+            self._reload_locked()
+
+    def _reload_locked(self) -> None:
         new_schedule: Dict[str, DatabaseScheduleEntry] = {}
         marker_value: Optional[datetime] = None
 
         try:
-            with self.session_manager.session_scope() as session:
+            with self.session_manager.session_scope(readonly=True) as session:
                 marker = session.get(PeriodicTaskChanged, 1)
                 if marker is not None:
                     marker_value = marker.last_update
@@ -305,7 +319,6 @@ class DatabaseScheduler(Scheduler):
             logger.exception("_reload failed; keeping current schedule")
             return
 
-        # Preserve in-memory run state for entries we have not yet persisted
         for name in self._dirty:
             old = self._schedule.get(name)
             new = new_schedule.get(name)
@@ -386,7 +399,7 @@ class DatabaseScheduler(Scheduler):
         static = self.app.conf.get("beat_schedule") or {}
         for name, raw in static.items():
             if name in self._schedule:
-                continue  # DB entries win
+                continue
             try:
                 self._schedule[name] = self.Entry(
                     model=None,
@@ -401,8 +414,6 @@ class DatabaseScheduler(Scheduler):
             except Exception:
                 logger.exception("Skipping static beat_schedule entry %r", name)
 
-    # ------------------------------------------------------------------
-    # Backward-compatible aliases
     # ------------------------------------------------------------------
     @classmethod
     def update_changed(cls, session) -> None:

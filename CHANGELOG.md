@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.4 - 2026-10-26
+
+### Fixed
+- **`DetachedInstanceError` on every tick** — `_maybe_reload` now reads
+  `PeriodicTaskChanged.last_update` as a scalar inside the session instead
+  of touching the ORM instance after the session closes.
+- **`TypeError: ScheduleEntry._next_instance() got an unexpected keyword
+  argument 'total_run_count'`** — `DatabaseScheduleEntry.__next__` no longer
+  forwards `total_run_count` to Celery's base method. Celery auto-increments
+  it internally; the kwarg was only ever accepted because a different Celery
+  version was assumed.
+
+### Changed
+- `SessionManager` now defaults to `expire_on_commit=False`, preventing a
+  whole class of "detached object" bugs. Pass `expire_on_commit=True`
+  explicitly if you need the old behaviour.
+- `DatabaseScheduler.sync()` is now called at the end of every `tick()`,
+  so `last_run_at` / `total_run_count` are persisted regularly instead of
+  only on `close()`.
+- `DatabaseScheduler._reload()` is guarded by an `RLock`, making it safe to
+  call from a background thread (e.g. a Postgres LISTEN/NOTIFY listener).
+
+### Added
+- `SessionManager.session_scope(readonly=True)` for read-only queries that
+  should not pay the cost of a `COMMIT` roundtrip.
+
 ## 0.1.3 — 2026-10-26
 
 ### Added

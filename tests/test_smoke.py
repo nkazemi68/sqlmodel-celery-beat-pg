@@ -13,10 +13,10 @@ def _pyproject_version() -> str:
 
 def test_version_sources_match():
     import sqlmodel_celery_beat
-    assert sqlmodel_celery_beat.__version__ == "0.1.3"
+    assert sqlmodel_celery_beat.__version__ == "0.1.4"
     assert sqlmodel_celery_beat.__version__ == _pyproject_version()
     # Installed distribution version must match as well.
-    assert importlib.metadata.version("sqlmodel-celery-beat-pg") == "0.1.3"
+    assert importlib.metadata.version("sqlmodel-celery-beat-pg") == "0.1.4"
 
 
 def test_cli_help():

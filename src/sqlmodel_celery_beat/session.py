@@ -7,10 +7,18 @@ from sqlmodel import Session, create_engine
 
 
 class SessionManager:
-    def __init__(self, dburi: str, schema: Optional[str] = None, **engine_kwargs):
+    def __init__(
+        self,
+        dburi: str,
+        schema: Optional[str] = None,
+        *,
+        expire_on_commit: bool = False,
+        **engine_kwargs,
+    ):
         self.schema = schema
         self._dburi = dburi
         self._overrides: dict[str, "object"] = {}
+        self.expire_on_commit = expire_on_commit
 
         if schema:
             connect_args = engine_kwargs.setdefault("connect_args", {})
@@ -22,17 +30,20 @@ class SessionManager:
 
     def session_factory(self, dburi: Optional[str] = None) -> Session:
         if dburi is None or dburi == self._dburi:
-            return Session(self.engine)
+            return Session(self.engine, expire_on_commit=self.expire_on_commit)
         if dburi not in self._overrides:
             self._overrides[dburi] = create_engine(dburi)
-        return Session(self._overrides[dburi])
+        return Session(self._overrides[dburi], expire_on_commit=self.expire_on_commit)
 
     @contextmanager
-    def session_scope(self) -> Generator[Session, None, None]:
+    def session_scope(self, readonly: bool = False) -> Generator[Session, None, None]:
         session = self.session_factory()
         try:
             yield session
-            session.commit()
+            if readonly:
+                session.rollback()
+            else:
+                session.commit()
         except Exception:
             session.rollback()
             raise

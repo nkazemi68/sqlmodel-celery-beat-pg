@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sqlmodel-celery-beat-pg"
-version = "0.1.3"
+version = "0.1.4"
 description = "Celery Beat scheduler, models, CLI and admin on SQLModel + PostgreSQL."
 readme = "README.md"
 requires-python = ">=3.10"
